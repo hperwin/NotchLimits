@@ -80,6 +80,19 @@ final class HostWindow: NSPanel {
             engine: engine, store: store, onQuit: onQuit,
             onOpenPanelSize: { [weak self] size in self?.openPanelSize = size }
         ))
+        // NSHostingView's default sizingOptions push the SwiftUI content's
+        // fitting size onto the window as min/max constraints — on a
+        // borderless panel that RESIZES the window to the morph shape's
+        // current model size every layout pass, collapsing this "fixed"
+        // full-height frame to the 32pt idle pill and then dragging the
+        // window (and the content view's anchor inside it) around during
+        // every peek/pop animation. That churn is what detached the peek
+        // from the screen top and slid the open cutout off the physical
+        // notch. Empty sizingOptions + an autoresizing fill keep the window
+        // at the frame computed above, permanently; only the SwiftUI shape
+        // inside moves, as the design intends.
+        hosting.sizingOptions = []
+        hosting.autoresizingMask = [.width, .height]
         hosting.frame = NSRect(origin: .zero, size: size)
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = CGColor.clear

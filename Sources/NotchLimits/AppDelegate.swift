@@ -45,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // The window is always ordered front (per spec); only its content's
         // click-through-ness and key status change with phase.
-        phaseObserver = engine.$phase.sink { [weak window] phase in
+        phaseObserver = engine.$phase.sink { [weak window, weak store] phase in
             guard let window else { return }
             switch phase {
             case .idle, .peeking:
@@ -56,6 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .open:
                 window.ignoresMouseEvents = false
                 window.makeKey()
+                // The 60s poll can leave the panel a minute stale at the
+                // moment it opens; kick a fetch so the numbers you're
+                // looking at are always seconds old.
+                store?.refreshNow()
             }
         }
 
