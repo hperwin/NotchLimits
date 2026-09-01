@@ -15,7 +15,11 @@ DEST="/Applications/NotchLimits.app"
 mkdir -p "$DEST/Contents/MacOS"
 rsync -a --delete "build/NotchLimits.app/" "$DEST/"
 
-open "$DEST"
+# With --launch-agent, launching is left to the agent's RunAtLoad below;
+# opening here too would stack a second identical overlay on the notch.
+if [[ "${1:-}" != "--launch-agent" ]]; then
+    open "$DEST"
+fi
 echo "Installed $DEST"
 
 if [[ "${1:-}" == "--launch-agent" ]]; then
