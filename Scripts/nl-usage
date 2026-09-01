@@ -1,0 +1,215 @@
+#!/usr/bin/python3
+"""nl-usage: NotchLimits data source shim.
+
+Runs `cswap list --json` (Claude accounts) and, in parallel, reads Codex
+rate limits over `codex app-server` JSON-RPC (account/rateLimits/read),
+then prints one merged cswap-schema JSON document with Codex appended as
+account slot 99. NotchLimits points at this script instead of cswap.
+
+Codex mapping: the unnamed account-wide limit's 300-min window -> fiveHour,
+10080-min -> sevenDay; named per-model limits (e.g. GPT-5.3-Codex-Spark)
+become scoped meters labeled "<Model> 5h" / "<Model> 7d". A failed Codex
+read falls back to a <30-min-old cache as lastGoodUsage (stale row);
+with no usable cache the Codex row is simply omitted.
+
+If cswap itself fails or emits non-JSON, its output and exit code pass
+through untouched so the app's normal error path still works.
+"""
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+CSWAP = os.path.expanduser("~/.local/bin/cswap")
+CODEX = os.path.expanduser("~/.local/bin/codex")
+CACHE = os.path.expanduser("~/.cache/nl-codex-usage.json")
+CODEX_SLOT = 99
+CACHE_MAX_AGE_S = 30 * 60
+
+# The app kills its child after 10s; keep worst-case under that.
+CSWAP_TIMEOUT_S = 8
+CODEX_TIMEOUT_S = 6
+
+
+def iso_utc(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def window_label(minutes):
+    return "5h" if (minutes or 0) <= 600 else "7d"
+
+
+def meter(window, name=None):
+    m = {
+        "pct": float(window.get("usedPercent") or 0),
+        "resetsAt": iso_utc(window["resetsAt"]) if window.get("resetsAt") else None,
+        "countdown": None,
+        "clock": None,
+    }
+    if name is not None:
+        m["name"] = name
+    return m
+
+
+def map_codex_usage(rate_limits):
+    by_id = rate_limits.get("rateLimitsByLimitId") or {"codex": rate_limits}
+    five = seven = None
+    scoped = []
+    for limit in by_id.values():
+        name = limit.get("limitName")
+        short = name.split("-")[-1] if name else None
+        for window in (limit.get("primary"), limit.get("secondary")):
+            if not window:
+                continue
+            label = window_label(window.get("windowDurationMins"))
+            if short:
+                scoped.append(meter(window, "%s %s" % (short, label)))
+            elif label == "5h" and five is None:
+                five = meter(window)
+            elif label == "7d" and seven is None:
+                seven = meter(window)
+            else:
+                scoped.append(meter(window, label))
+    if five is None and seven is None and not scoped:
+        return None
+    return {"fiveHour": five, "sevenDay": seven, "scoped": scoped}
+
+
+def fetch_codex(result_box):
+    request_lines = (
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+        '{"clientInfo":{"name":"nl-usage","title":"nl-usage","version":"1.0"}}}\n'
+        '{"jsonrpc":"2.0","method":"initialized"}\n'
+        '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}\n'
+    )
+    try:
+        proc = subprocess.Popen(
+            [CODEX, "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        return
+    watchdog = threading.Timer(CODEX_TIMEOUT_S, proc.kill)
+    watchdog.start()
+    try:
+        proc.stdin.write(request_lines)
+        proc.stdin.flush()
+        for line in proc.stdout:
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("id") == 2:
+                result = msg.get("result") or {}
+                usage = map_codex_usage(result.get("rateLimits") or {})
+                if usage:
+                    result_box["usage"] = usage
+                return
+    except (OSError, ValueError):
+        pass
+    finally:
+        watchdog.cancel()
+        proc.kill()
+
+
+def read_cache():
+    try:
+        with open(CACHE) as f:
+            cached = json.load(f)
+        if time.time() - cached.get("fetchedAt", 0) <= CACHE_MAX_AGE_S:
+            return cached
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def write_cache(usage):
+    try:
+        os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+        with open(CACHE, "w") as f:
+            json.dump({"fetchedAt": time.time(), "usage": usage}, f)
+    except OSError:
+        pass
+
+
+def codex_account(fresh_usage):
+    now = time.time()
+    account = {
+        "number": CODEX_SLOT,
+        "email": "codex@openai.com",
+        "organizationName": "OpenAI Codex",
+        "alias": "codex",
+        "active": False,
+        "usageStatus": "ok",
+        "usage": None,
+        "lastGoodUsage": None,
+        "usageFetchedAt": None,
+        "usageAgeSeconds": None,
+        "lastGoodFetchedAt": None,
+        "lastGoodAgeSeconds": None,
+    }
+    if fresh_usage:
+        write_cache(fresh_usage)
+        account["usage"] = fresh_usage
+        account["usageFetchedAt"] = iso_utc(now)
+        account["usageAgeSeconds"] = 0.0
+        return account
+    cached = read_cache()
+    if cached:
+        account["lastGoodUsage"] = cached["usage"]
+        account["lastGoodFetchedAt"] = iso_utc(cached["fetchedAt"])
+        account["lastGoodAgeSeconds"] = now - cached["fetchedAt"]
+        return account
+    return None
+
+
+def main():
+    codex_box = {}
+    codex_thread = threading.Thread(target=fetch_codex, args=(codex_box,))
+    codex_thread.start()
+
+    try:
+        cswap = subprocess.run(
+            [CSWAP, "list", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=CSWAP_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        codex_thread.join(CODEX_TIMEOUT_S)
+        sys.stderr.write("nl-usage: cswap failed: %s\n" % e)
+        sys.exit(1)
+
+    codex_thread.join(CODEX_TIMEOUT_S + 1)
+
+    # cswap may print an upgrade-notice line before the JSON payload.
+    raw = cswap.stdout
+    brace = raw.find("{")
+    payload = None
+    if brace >= 0:
+        try:
+            payload = json.loads(raw[brace:])
+        except ValueError:
+            payload = None
+    if payload is None:
+        sys.stdout.write(raw)
+        sys.stderr.write(cswap.stderr)
+        sys.exit(cswap.returncode)
+
+    row = codex_account(codex_box.get("usage"))
+    if row is not None:
+        payload.setdefault("accounts", [])
+        payload["accounts"] = [
+            a for a in payload["accounts"] if a.get("number") != CODEX_SLOT
+        ] + [row]
+    json.dump(payload, sys.stdout)
+    sys.stdout.write("\n")
+
+
+if __name__ == "__main__":
+    main()

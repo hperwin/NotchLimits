@@ -14,6 +14,16 @@ NotchLimits renders data from [claude-swap](https://github.com/realiti4/claude-s
 
 Optional: if you run `cswap` on a schedule (cron or launchd) and append its output to `~/Library/Logs/cswap-auto.log`, NotchLimits watches that file and refreshes a couple of seconds after each run instead of waiting for the next 60s poll. Without it the poll alone keeps the panel current.
 
+### Optional: a Codex row
+
+If you also use OpenAI's Codex CLI, [`Scripts/nl-usage`](Scripts/nl-usage) is an opt-in shim that adds a `codex` row to the panel. It runs `cswap list --json` and reads Codex's rate limits over `codex app-server` JSON-RPC (`account/rateLimits/read`) in parallel, then emits one merged document in cswap's wire schema with Codex as account slot 99. Codex handles its own token refresh, and the shim (Python stdlib only, no dependencies) never touches credentials. To opt in:
+
+```bash
+ln -s "$PWD/Scripts/nl-usage" ~/.local/bin/nl-usage
+```
+
+NotchLimits prefers `~/.local/bin/nl-usage` when it exists and behaves exactly as before when it doesn't. If a Codex read fails, the shim reuses its last snapshot for up to 30 minutes (shown as a stale row) or omits the row; cswap errors pass through untouched.
+
 So the setup is two steps:
 
 ```bash

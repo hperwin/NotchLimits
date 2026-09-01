@@ -15,8 +15,17 @@ final class UsageStore: ObservableObject {
     @Published private(set) var lastUpdated: Date? = nil
     @Published private(set) var fetchError: String? = nil
 
-    private nonisolated static let cswapExecutablePath =
-        ("~/.local/bin/cswap" as NSString).expandingTildeInPath
+    // Scripts/nl-usage is an optional shim that merges `cswap list --json`
+    // with OpenAI Codex rate limits, emitting the same wire schema (Codex as
+    // account slot 99). Installing it at ~/.local/bin/nl-usage opts in; the
+    // resolved path is fixed at process start, like the cswap path always was.
+    private nonisolated static let cswapExecutablePath: String = {
+        let shim = ("~/.local/bin/nl-usage" as NSString).expandingTildeInPath
+        if FileManager.default.isExecutableFile(atPath: shim) {
+            return shim
+        }
+        return ("~/.local/bin/cswap" as NSString).expandingTildeInPath
+    }()
     private nonisolated static let logFilePath =
         ("~/Library/Logs/cswap-auto.log" as NSString).expandingTildeInPath
 
