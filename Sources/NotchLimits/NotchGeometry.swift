@@ -11,9 +11,11 @@ struct NotchGeometry {
     let screen: NSScreen
     /// The physical notch band, global coords: spans the camera housing.
     let notchRect: NSRect
-    /// notchRect inset -24pt horizontally, extending 60pt past the screen's
-    /// top edge down to 14pt below the menu bar's bottom edge — the dwell-
-    /// tracking hit zone for `.idle`.
+    /// notchRect inset -12pt horizontally, extending 60pt past the screen's
+    /// top edge down to 5pt below the menu bar's bottom edge — the dwell-
+    /// tracking hit zone for `.idle`. Deliberately tight: the old 24pt/14pt
+    /// slop overlapped browser-tab territory, so ordinary mousing near the
+    /// top center kept setting off the peek.
     let hoverZone: NSRect
     /// Horizontal center of the notch band — the panel's fixed X anchor.
     let panelAnchorX: CGFloat
@@ -54,16 +56,16 @@ struct NotchGeometry {
 
     private static func make(screen: NSScreen, notchRect: NSRect, menuBarBottomY: CGFloat) -> NotchGeometry {
         let hoverZone = NSRect(
-            x: notchRect.minX - 24,
-            y: menuBarBottomY - 14,
-            width: notchRect.width + 48,
+            x: notchRect.minX - 12,
+            y: menuBarBottomY - 5,
+            width: notchRect.width + 24,
             // +60 past screen.frame.maxY: macOS pins NSEvent.mouseLocation.y
             // at EXACTLY frame.maxY when the cursor is pushed to the top,
             // and NSRect.contains() excludes the max edge — a zone whose
             // top sat exactly at maxY rejected the cursor right when it was
             // shoved into the notch. Extending past it keeps that pinned
             // value strictly inside.
-            height: (screen.frame.maxY + 60) - (menuBarBottomY - 14)
+            height: (screen.frame.maxY + 60) - (menuBarBottomY - 5)
         )
         return NotchGeometry(
             screen: screen,

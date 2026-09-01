@@ -43,9 +43,16 @@ final class HoverEngine: ObservableObject {
     /// is expected and invisible.
     private var rawPeekProgress: Double = 0
     private var wasInsideHoverZone = false
+    /// Hover-intent gate: time the cursor has spent continuously in the
+    /// hover zone while `.idle`. The peek doesn't begin until this reaches
+    /// `armingDelay`, so a transit through the zone (mousing across the top,
+    /// dragging a window) renders nothing at all — no build-and-melt
+    /// flicker. Any exit resets it.
+    private var armingElapsed: TimeInterval = 0
 
     private static let idleHz: Double = 20
     private static let activeHz: Double = 60
+    private static let armingDelay: TimeInterval = 0.20     // idle -> peek intent gate
     private static let buildDuration: TimeInterval = 0.55   // idle -> open dwell
     private static let decayDuration: TimeInterval = 0.28   // melt-back out of zone
     private static let closeGrace: TimeInterval = 0.45      // open -> idle grace
@@ -102,10 +109,16 @@ final class HoverEngine: ObservableObject {
         switch phase {
         case .idle:
             if insideHoverZone {
-                rawPeekProgress = 0
-                wasInsideHoverZone = true
-                phase = .peeking(target: 1)
-                reschedule(hz: Self.activeHz)
+                armingElapsed += dt
+                if armingElapsed >= Self.armingDelay {
+                    armingElapsed = 0
+                    rawPeekProgress = 0
+                    wasInsideHoverZone = true
+                    phase = .peeking(target: 1)
+                    reschedule(hz: Self.activeHz)
+                }
+            } else {
+                armingElapsed = 0
             }
 
         case .peeking:
