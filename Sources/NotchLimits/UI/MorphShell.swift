@@ -183,11 +183,16 @@ struct MorphShell: View {
     private var peekT: Double { min(max(morph + 1, 0), 1) }
     private var openWidth: CGFloat { notchWidth + 220 }
 
+    /// Peek reads as a tongue sliding out of the notch slot: it TAPERS 8pt
+    /// inside each notch edge while dropping 30pt below the menu bar —
+    /// never bulging past the notch, whose sharp black-on-white edges
+    /// against the menu bar were the old peek's tell. The pop lerps start
+    /// from these same endpoints so the peek→open handoff stays continuous.
     private var shapeWidth: CGFloat {
-        popT > 0 ? lerp(notchWidth + 24, openWidth, popT) : notchWidth + 24 * peekT
+        popT > 0 ? lerp(notchWidth - 16, openWidth, popT) : notchWidth - 16 * peekT
     }
     private var shapeHeight: CGFloat {
-        popT > 0 ? lerp(notchHeight + 22, openTargetHeight, popT) : notchHeight + 22 * peekT
+        popT > 0 ? lerp(notchHeight + 30, openTargetHeight, popT) : notchHeight + 30 * peekT
     }
     private var glowOpacity: Double { popT > 0 ? 0 : 0.10 * peekT }
 
@@ -228,7 +233,11 @@ struct MorphShell: View {
                     .allowsHitTesting(engine.phase == .open)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .top)
+        // maxHeight too: the hosting view now spans the window's full fixed
+        // height (HostWindow no longer lets content size drive the frame),
+        // and without it SwiftUI would center the shape vertically in that
+        // tall proposal instead of pinning it to the screen top.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear(perform: syncOnAppear)
         .onPreferenceChange(PanelHeightPreferenceKey.self) { measured in
             guard measured > 0 else { return }
