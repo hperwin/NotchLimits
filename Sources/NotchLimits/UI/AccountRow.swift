@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// One account's row: spark + name, the binding-window big percentage, the
-/// meters, and a closing line — smallest countdown, or a relogin warning
+/// meters, and a closing line — every window's countdown, or a relogin warning
 /// that takes its place (last-good bars stay visible either way). Row
 /// height ≈ 64; the hairline separator between rows is drawn by
 /// PanelContent, which owns the list.
@@ -15,9 +15,17 @@ struct AccountRow: View {
         account.meters.max(by: { $0.pct < $1.pct })
     }
 
-    /// The meter with the soonest reset, for the closing line.
-    private var soonest: MeterVM? {
-        account.meters.filter { $0.resetsAt != nil }.min { $0.resetsAt! < $1.resetsAt! }
+    /// The closing line: every window whose reset is still ahead, in meter
+    /// order ("5h resets in 1h 20m · 7d in 2d 19h"). A reset already behind
+    /// `now` (stale data) drops out instead of reading "0m".
+    private func resetLine(now: Date) -> String {
+        let resets = account.meters
+            .filter { ($0.resetsAt ?? .distantPast) > now }
+            .enumerated()
+            .map { i, meter in
+                "\(meter.label) \(i == 0 ? "resets in" : "in") \(Countdown.string(until: meter.resetsAt!, now: now))"
+            }
+        return (resets + (account.isStale ? ["stale"] : [])).joined(separator: " · ")
     }
 
     private var sparkColor: Color {
@@ -68,16 +76,13 @@ struct AccountRow: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(Ink.color(for: .critical))
             }
-        } else if let soonest, let resetsAt = soonest.resetsAt {
+        } else if account.isStale || account.meters.contains(where: { $0.resetsAt != nil }) {
             TimelineView(.everyMinute) { context in
-                Text("\(soonest.label) resets in \(Countdown.string(until: resetsAt, now: context.date))\(account.isStale ? " · stale" : "")")
+                Text(resetLine(now: context.date))
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(Ink.muted)
+                    .lineLimit(1)
             }
-        } else if account.isStale {
-            Text("stale")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(Ink.muted)
         }
     }
 
