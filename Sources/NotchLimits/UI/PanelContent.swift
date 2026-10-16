@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The open-state panel content: header, account rows, footer. Laid out at
-/// its natural intrinsic height (MorphShell owns the height cap and clips to
-/// it; Snapshot renders this view uncapped for a full capture). `width`
+/// The open-state panel content: token hero, header, account rows, footer.
+/// Laid out at its natural intrinsic height (MorphShell owns the height cap
+/// and clips to it; Snapshot passes the same list cap). `width`
 /// tracks the wrap shape's actual open width (`notchWidth + 220`), since
 /// that varies by machine. `notchHeight` insets all content below the
 /// physical notch band (also machine-varying) so nothing ever sits above
@@ -11,19 +11,28 @@ import SwiftUI
 @MainActor
 struct PanelContent: View {
     @ObservedObject var store: UsageStore
+    /// Not observed here: TokenHero observes it, so a ticking total redraws
+    /// the hero alone, never the account rows.
+    let tokens: TokenStore
     var onQuit: () -> Void = {}
     var width: CGFloat = 396
     var notchHeight: CGFloat = 32
     /// Vertical space available for the account list (panel cap minus
-    /// header/footer). nil = lay out naturally (Snapshot's uncapped path).
-    /// When the rows outgrow it, the list scrolls — never clips.
+    /// hero/header/footer). nil = lay out naturally.
+    /// When the rows outgrow it, the live list scrolls, never clips.
     var maxListHeight: CGFloat? = nil
+    /// Snapshot turns this off: ImageRenderer draws a ScrollView's content
+    /// as nothing, so its capped list shows the top rows that fit instead.
+    var scrollsList = true
 
     static let headerHeight: CGFloat = 44
     static let footerHeight: CGFloat = 26
+    /// Hero + header + footer: everything but the account list.
+    static let chromeHeight = TokenHero.height + headerHeight + footerHeight
 
     var body: some View {
         VStack(spacing: 0) {
+            TokenHero(tokens: tokens)
             header
             accountsList
             footer
@@ -89,8 +98,12 @@ struct PanelContent: View {
     @ViewBuilder
     private var accountsList: some View {
         if let cap = maxListHeight, naturalListHeight > cap {
-            ScrollView(.vertical) { rowsStack }
-                .frame(height: cap)
+            if scrollsList {
+                ScrollView(.vertical) { rowsStack }
+                    .frame(height: cap)
+            } else {
+                rowsStack.frame(height: cap, alignment: .top).clipped()
+            }
         } else {
             rowsStack
         }

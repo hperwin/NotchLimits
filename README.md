@@ -2,10 +2,10 @@
 
 A macOS notch companion for Claude usage limits.
 
-Hover under the MacBook notch: it slowly stretches downward, then springs open into a liquid-glass panel that wraps around the notch, showing live Claude rate-limit usage for every account you have. One row per account: the Claude spark, the account name, a big bold percentage for whichever window is closest to the limit, and small bars for each window (5h, 7d, and scoped limits like Fable) with live reset countdowns. Move away and it melts back into the notch.
+Hover under the MacBook notch: it slowly stretches downward, then springs open into a liquid-glass panel that wraps around the notch, showing live Claude rate-limit usage for every account you have. Across the top, right under the notch, is one number: the Claude Code and Codex tokens this Mac has spent, rolling up live on an odometer. One row per account: the Claude spark, the account name, a big bold percentage for whichever window is closest to the limit, and small bars for each window (5h, 7d, and scoped limits like Fable) with live reset countdowns. Move away and it melts back into the notch.
 
 - **Zero permissions.** No Accessibility, no Screen Recording, no input monitoring. The hover detection is just polled `NSEvent.mouseLocation`.
-- **Zero dependencies** in the app itself. Pure SwiftUI + AppKit, no packages, about 1,600 lines of Swift.
+- **Zero dependencies** in the app itself. Pure SwiftUI + AppKit, no packages, about 3,000 lines of Swift.
 - **Interruptible everywhere.** The peek eases toward its build or melt target on timing matched to your dwell (about 0.55s in, faster back out) and retargets the moment you cross the hover boundary; the pop and close are real springs. Idle cost is a 20Hz point-in-rect check with nothing rendered.
 
 ## Where the data comes from
@@ -41,6 +41,23 @@ Scripts/install.sh                 # builds, ad-hoc signs, installs to /Applicat
 
 NotchLimits expects the `cswap` binary at `~/.local/bin/cswap`, which is where `uv tool install` and `pipx` put it. A panel that opens with a header but no account rows means cswap has no accounts configured yet.
 
+## Token counter
+
+The number at the top of the panel counts the Claude Code and Codex tokens used on this Mac, across every account and profile: input, output, cache writes and cache reads. It needs no setup and no account access; it reads the session logs both tools already write locally:
+
+- **Claude Code**: `~/.claude/projects`, `$CLAUDE_CONFIG_DIR/projects`, `~/.config/claude/projects`, any other `~/.claude-*` config dir, claude-swap's per-account profiles, Xcode's Claude agent, and Claude desktop's local agent sessions. Each API response is counted once, at its final usage.
+- **Codex**: `~/.codex/sessions` and `~/.codex/archived_sessions` (or `$CODEX_HOME`). Forked sessions replaying their parent's history are not counted twice.
+
+`$CLAUDE_CONFIG_DIR` and `$CODEX_HOME` are honored when they are set in the app's own environment (for example with `launchctl setenv`); the app does not read your shell's rc files.
+
+Nothing leaves your Mac, and the number only ever goes up. The first launch counts what is still on disk, in the background (the caption says "counting" until it is done). Claude Code deletes transcripts after about 30 days by default, so history older than that is not in the total. From then on nothing is lost: a ledger in `~/Library/Application Support/NotchLimits` remembers how far into each log it has read and what that log was worth, so a relaunch reads only new lines and pruned transcripts stay counted. The app follows each log as it is written, whether or not the panel is open, and costs next to nothing when no tokens are moving.
+
+```bash
+.build/debug/NotchLimits --tokens    # count once and print the totals and per-log offsets as JSON
+```
+
+Set `NOTCHLIMITS_STATE_DIR` to keep a dev build's ledger apart from the installed app's.
+
 ## Requirements
 
 - macOS 26 (Tahoe) on Apple silicon. The panel uses the native `glassEffect` liquid glass. (An `.ultraThinMaterial` stand-in exists in the code, but only the headless `--snapshot` renderer uses it, because offscreen rendering cannot sample `glassEffect`.)
@@ -54,6 +71,7 @@ NotchLimits expects the `cswap` binary at `~/.local/bin/cswap`, which is where `
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 swift build
 .build/debug/NotchLimits --demo-open              # launches straight to the open panel
+.build/debug/NotchLimits --demo-open --pin-open   # ...and keeps it open with no cursor on it
 .build/debug/NotchLimits --snapshot /tmp/nl.png   # headless render of the panel to a PNG, prints SNAPSHOT OK
 ```
 

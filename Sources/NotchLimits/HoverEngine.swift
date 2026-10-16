@@ -28,6 +28,10 @@ final class HoverEngine: ObservableObject {
     /// check can include the panel's live on-screen frame.
     var panelFrameProvider: (() -> NSRect?)?
 
+    /// `--pin-open`: `.open` never times out, so a screen recording can
+    /// capture the panel with no cursor on it. Esc and quit still close it.
+    var pinnedOpen = false
+
     private let geometry: NotchGeometry
     private var timer: Timer?
     private var currentHz: Double = 0
@@ -148,7 +152,7 @@ final class HoverEngine: ObservableObject {
             let panelFrame = panelFrameProvider?()?.insetBy(dx: Self.panelSlack, dy: Self.panelSlack)
             let insidePanel = panelFrame.map { $0.contains(location) } ?? false
 
-            if insideHoverZone || insidePanel {
+            if insideHoverZone || insidePanel || pinnedOpen {
                 outsideGraceElapsed = 0
             } else {
                 outsideGraceElapsed += dt

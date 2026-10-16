@@ -1,21 +1,24 @@
 import AppKit
 import Combine
 
-/// Wires the whole app together: geometry → store → engine → window, then
+/// Wires the whole app together: geometry → stores → engine → window, then
 /// observes `engine.phase` to gate the window's mouse pass-through and key
 /// status. `.accessory` activation policy — no Dock icon, no menu bar; this
 /// is a background notch companion only.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let demoOpen: Bool
+    private let pinOpen: Bool
 
     private var store: UsageStore!
+    private var tokens: TokenStore!
     private var engine: HoverEngine!
     private var window: HostWindow!
     private var phaseObserver: AnyCancellable?
 
-    init(demoOpen: Bool) {
+    init(demoOpen: Bool, pinOpen: Bool) {
         self.demoOpen = demoOpen
+        self.pinOpen = pinOpen
         super.init()
     }
 
@@ -29,15 +32,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let store = UsageStore()
+        let tokens = TokenStore()
         let engine = HoverEngine(geometry: geometry)
         let window = HostWindow(
             geometry: geometry,
             engine: engine,
             store: store,
+            tokens: tokens,
             onQuit: { NSApplication.shared.terminate(nil) }
         )
 
         self.store = store
+        self.tokens = tokens
         self.engine = engine
         self.window = window
 
@@ -66,6 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.orderFrontRegardless()
 
         store.start()
+        // Counts whether or not the panel is open, so the total is already
+        // current, and the first run's backfill long done, when you look.
+        tokens.start()
+        engine.pinnedOpen = pinOpen
         engine.start()
 
         if demoOpen {
@@ -77,6 +87,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("WINDOW_FRAME x=\(f.origin.x) y=\(f.origin.y) w=\(f.width) h=\(f.height) midX=\(f.midX) screenMidX=\(geometry.screen.frame.midX) screenTopY=\(geometry.screen.frame.maxY)")
             fflush(stdout)
         }
+    }
+
+    /// Autosave runs at most once a minute; this keeps the last stretch.
+    func applicationWillTerminate(_ notification: Notification) {
+        guard let tokens else { return }
+        // The X quits with the hero up, so no roll settles or unmounts to
+        // record what it showed. It never draws above the total, so the next
+        // open starts at or above anything already seen.
+        if engine.phase == .open { tokens.lastShown = tokens.total }
+        tokens.save()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

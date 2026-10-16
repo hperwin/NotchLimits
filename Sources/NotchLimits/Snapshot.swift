@@ -13,6 +13,12 @@ enum Snapshot {
     private static let minOpenHeight: CGFloat = 320
 
     static func write(store: UsageStore, to path: String) async -> Bool {
+        // Counted to the end of every log, and shown as already landed: the
+        // renderer draws one frame, which would catch a roll at its start.
+        let tokens = TokenStore()
+        await tokens.catchUp()
+        tokens.lastShown = tokens.total
+
         let deadline = Date().addingTimeInterval(8)
         while store.lastUpdated == nil && Date() < deadline {
             try? await Task.sleep(nanoseconds: 100_000_000)
@@ -22,10 +28,16 @@ enum Snapshot {
         let notchWidth = geometry?.notchRect.width ?? 200
         let notchHeight = geometry?.notchRect.height ?? 32
         let openWidth = notchWidth + 220
-
-        let content = PanelContent(store: store, onQuit: {}, width: openWidth, notchHeight: notchHeight)
-            .fixedSize(horizontal: false, vertical: true)
         let maxOpenHeight = geometry?.maxOpenPanelHeight ?? 560
+
+        // The same list cap MorphShell passes, so a long account list stops
+        // where the live panel's scroll view would instead of pushing the
+        // footer out of the frame.
+        let content = PanelContent(
+            store: store, tokens: tokens, onQuit: {}, width: openWidth, notchHeight: notchHeight,
+            maxListHeight: maxOpenHeight - PanelContent.chromeHeight, scrollsList: false
+        )
+            .fixedSize(horizontal: false, vertical: true)
         let panelHeight = min(max(measuredHeight(of: content), minOpenHeight + notchHeight), maxOpenHeight + notchHeight)
 
         let scene = ZStack(alignment: .top) {
