@@ -173,7 +173,6 @@ struct MorphShell: View {
     @State private var contentBlur: CGFloat = 6
 
     private static let minOpenHeight: CGFloat = 320
-    private static let baseContentHeight = PanelContent.heroHeight + PanelContent.headerHeight + PanelContent.footerHeight
     private static let rowHeight: CGFloat = 64
 
     /// Mirrors HoverEngine's internal dwell build/decay durations. The two
@@ -211,7 +210,7 @@ struct MorphShell: View {
     /// by that inset too, so the guaranteed ≥320pt content region still
     /// holds below the inset rather than being eaten by it.
     private var openHeightEstimate: CGFloat {
-        let content = notchHeight + Self.baseContentHeight + CGFloat(store.accounts.count) * Self.rowHeight
+        let content = notchHeight + PanelContent.chromeHeight + CGFloat(store.accounts.count) * Self.rowHeight
         return min(max(content, Self.minOpenHeight + notchHeight), maxOpenHeight + notchHeight)
     }
 
@@ -232,7 +231,7 @@ struct MorphShell: View {
             if contentOpacity > 0 || engine.phase == .open {
                 PanelContent(
                     store: store, tokens: tokens, onQuit: onQuit, width: openWidth, notchHeight: notchHeight,
-                    maxListHeight: maxOpenHeight - PanelContent.heroHeight - PanelContent.headerHeight - PanelContent.footerHeight
+                    maxListHeight: maxOpenHeight - PanelContent.chromeHeight
                 )
                     .frame(width: openWidth, alignment: .top)
                     .background(heightProbe)
