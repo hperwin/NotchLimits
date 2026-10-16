@@ -33,7 +33,7 @@ final class HostWindow: NSPanel {
         )
     }
 
-    init(geometry: NotchGeometry, engine: HoverEngine, store: UsageStore, onQuit: @escaping () -> Void) {
+    init(geometry: NotchGeometry, engine: HoverEngine, store: UsageStore, tokens: TokenStore, onQuit: @escaping () -> Void) {
         self.engine = engine
 
         let size = NSSize(
@@ -77,7 +77,7 @@ final class HostWindow: NSPanel {
         level = .statusBar
 
         let hosting = NSHostingView(rootView: MorphShell(
-            engine: engine, store: store, onQuit: onQuit,
+            engine: engine, store: store, tokens: tokens, onQuit: onQuit,
             onOpenPanelSize: { [weak self] size in self?.openPanelSize = size }
         ))
         // NSHostingView's default sizingOptions push the SwiftUI content's
