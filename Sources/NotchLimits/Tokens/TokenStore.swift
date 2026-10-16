@@ -23,10 +23,15 @@ final class TokenStore: ObservableObject {
 
     /// The value the hero last landed on, persisted in the ledger so the next
     /// open rolls from there. Lives here because PanelContent is unmounted
-    /// while the panel is closed.
+    /// while the panel is closed. Never lowered, so no path (a quit mid-roll,
+    /// an early mount) can start a later open below a number already seen.
     var lastShown: Int64? {
         get { shown }
-        set { shown = newValue; ingest.setLastShown(newValue) }
+        set {
+            guard let newValue, newValue > shown ?? -1 else { return }
+            shown = newValue
+            ingest.setLastShown(newValue)
+        }
     }
     private var shown: Int64?
 
@@ -79,7 +84,7 @@ final class TokenStore: ObservableObject {
         if totals.claude > claude { claude = totals.claude }
         if totals.codex > codex { codex = totals.codex }
         if totals.caughtUp && !isCaughtUp { isCaughtUp = true }
-        if shown == nil { shown = totals.lastShown }
+        if let saved = totals.lastShown, saved > shown ?? -1 { shown = saved }
     }
 }
 

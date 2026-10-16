@@ -18,11 +18,16 @@ struct TokenHero: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Odometer(value: tokens.total, from: tokens.lastShown ?? 0, delay: 0.3) { tokens.lastShown = $0 }
-            Text("\(tokens.isCaughtUp ? "" : "counting ")tokens on this Mac · Claude \(tokens.claude.formatted(Self.compact)) · Codex \(tokens.codex.formatted(Self.compact))")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Ink.muted)
-                .lineLimit(1)
+            // Waits for the ledger's first publish (about half a second after
+            // launch): an odometer mounted before it would roll up from 0
+            // instead of from what was last shown.
+            if tokens.total > 0 || tokens.isCaughtUp {
+                Odometer(value: tokens.total, from: tokens.lastShown ?? 0, delay: 0.3) { tokens.lastShown = $0 }
+                Text("\(tokens.isCaughtUp ? "" : "counting ")tokens on this Mac · Claude \(tokens.claude.formatted(Self.compact)) · Codex \(tokens.codex.formatted(Self.compact))")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Ink.muted)
+                    .lineLimit(1)
+            }
         }
         .padding(.top, 8)
         .padding(.horizontal, 16)

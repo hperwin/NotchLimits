@@ -89,13 +89,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Autosave runs at most every 10 s; this keeps the last few seconds.
+    /// Autosave runs at most once a minute; this keeps the last stretch.
     func applicationWillTerminate(_ notification: Notification) {
         guard let tokens else { return }
         // The X quits with the hero up, so no roll settles or unmounts to
         // record what it showed. It never draws above the total, so the next
         // open starts at or above anything already seen.
-        if engine.phase == .open, tokens.total > tokens.lastShown ?? 0 { tokens.lastShown = tokens.total }
+        if engine.phase == .open { tokens.lastShown = tokens.total }
         tokens.save()
     }
 
