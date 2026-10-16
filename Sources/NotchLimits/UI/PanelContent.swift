@@ -25,14 +25,14 @@ struct PanelContent: View {
     /// as nothing, so its capped list shows the top rows that fit instead.
     var scrollsList = true
 
-    static let heroHeight = TokenHero.height
     static let headerHeight: CGFloat = 44
     static let footerHeight: CGFloat = 26
+    /// Hero + header + footer: everything but the account list.
+    static let chromeHeight = TokenHero.height + headerHeight + footerHeight
 
     var body: some View {
         VStack(spacing: 0) {
             TokenHero(tokens: tokens)
-                .frame(height: Self.heroHeight)
             header
             accountsList
             footer

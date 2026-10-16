@@ -35,8 +35,7 @@ enum Snapshot {
         // footer out of the frame.
         let content = PanelContent(
             store: store, tokens: tokens, onQuit: {}, width: openWidth, notchHeight: notchHeight,
-            maxListHeight: maxOpenHeight - PanelContent.heroHeight - PanelContent.headerHeight - PanelContent.footerHeight,
-            scrollsList: false
+            maxListHeight: maxOpenHeight - PanelContent.chromeHeight, scrollsList: false
         )
             .fixedSize(horizontal: false, vertical: true)
         let panelHeight = min(max(measuredHeight(of: content), minOpenHeight + notchHeight), maxOpenHeight + notchHeight)

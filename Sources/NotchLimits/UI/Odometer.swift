@@ -1,18 +1,17 @@
 import SwiftUI
 import AppKit
 
-// The animation playbook's per-digit odometer (PLAYBOOK law 7, kit block
-// "odometer" with carry geneva, soft mask and the static lock glow): a new
-// digit rises in from below, the higher a column the earlier it lands, the
-// roll lands on the literal value, then a short glow. The whole display is
-// ONE monotone Double `v` and every column is a pure function of it, so the
+// A per-digit odometer (geneva carry, soft mask, lock glow): a new digit
+// rises in from below, the higher a column the earlier it lands, the roll
+// lands on the literal value, then a short glow. The whole display is ONE
+// monotone Double `v` and every column is a pure function of it, so the
 // reading can never pass the target or step back, whatever the cadence.
 
-/// REEL_N, the kit's roll curve, verbatim from payout-engine.js: 69 knots at
-/// k = 146...214 (k counts reference frames at 60 per second, so a roll from
-/// rest lasts 68 k = 1.133 s), value 0...3200, evaluated with the engine's
-/// monoSpline (mean-secant tangents, end secants at the ends, then the
-/// Fritsch-Carlson limit applied in place, in order).
+/// The odometer's measured reel curve (REEL_N): 69 knots at k = 146...214
+/// (k counts reference frames at 60 per second, so a roll from rest lasts
+/// 68 k = 1.133 s), value 0...3200, evaluated with a monotone spline
+/// (mean-secant tangents, end secants at the ends, then the Fritsch-Carlson
+/// limit applied in place, in order).
 enum OdometerReel {
     static let start = 146.0, land = 214.0, fps = 60.0
 
@@ -68,7 +67,7 @@ enum OdometerReel {
 /// most once per 5 s so a counter that lands every couple of seconds does
 /// not flicker.
 struct OdometerMotion {
-    static let glowSeconds = (225.5 - OdometerReel.land) / OdometerReel.fps   // the kit's K_END: 0.19 s
+    static let glowSeconds = (225.5 - OdometerReel.land) / OdometerReel.fps   // 0.19 s
     private(set) var target: Double
     private var v0: Double, distance = 0.0, k0 = OdometerReel.start, t0: TimeInterval = 0
     private var pulse = -TimeInterval.infinity   // landing that last fired the glow
@@ -102,9 +101,8 @@ struct OdometerMotion {
         return distance * OdometerReel.slope(k) / (1 - OdometerReel.shape(k0))
     }
 
-    /// The kit's static glow: rises over k213.5...216.5, eases out by k225.5.
+    /// The lock glow: rises over k213.5...216.5, eases out by k225.5.
     func glow(at t: TimeInterval) -> Double {
-        func smooth(_ x: Double) -> Double { let x = min(max(x, 0), 1); return x * x * (3 - 2 * x) }
         let k = OdometerReel.land + (t - glowStart) * OdometerReel.fps
         return smooth((k - 213.5) / 3) * (1 - smooth((k - 216.5) / 9))
     }
@@ -122,33 +120,34 @@ struct OdometerMotion {
     }
 }
 
+/// Smoothstep, clamped to 0...1.
+private func smooth(_ x: Double) -> Double { let x = min(max(x, 0), 1); return x * x * (3 - 2 * x) }
+
 /// A live odometer for an integer that only grows. Rolls from `from` to
 /// `value` on appear (after `delay`, so a fade-in does not eat the start of
 /// the roll), retargets on every change of `value`, and hands the value it
-/// shows to `onSettle` when a roll settles, or when the view goes away
-/// mid-roll (floor of v, so the next mount continues from what was seen).
-/// The TimelineView is paused whenever nothing moves: an idle odometer draws
-/// no frames at all.
+/// shows to `onSettle` when a roll settles and when the view goes away
+/// (floor of v, so the next mount continues from what was seen).
+/// The TimelineView is paused whenever nothing moves, so an idle odometer
+/// draws no frames at all, and otherwise ticks at the reel curve's 60 per
+/// second: a 120 Hz display would only double the cost.
 struct Odometer: View {
     let value: Int64
-    let size: CGFloat
-    let ink: Color
     let delay: TimeInterval
     let onSettle: (Int64) -> Void
     @State private var motion: OdometerMotion
     @State private var live = false
 
-    init(value: Int64, from: Int64, size: CGFloat = 26, ink: Color = Ink.primary,
-         delay: TimeInterval = 0, onSettle: @escaping (Int64) -> Void = { _ in }) {
-        self.value = value; self.size = size; self.ink = ink; self.delay = delay; self.onSettle = onSettle
+    init(value: Int64, from: Int64, delay: TimeInterval, onSettle: @escaping (Int64) -> Void) {
+        self.value = value; self.delay = delay; self.onSettle = onSettle
         _motion = State(initialValue: OdometerMotion(value: Double(from)))
     }
 
     private static var now: TimeInterval { Date.now.timeIntervalSinceReferenceDate }
 
     var body: some View {
-        let face = Face(size: size, ink: ink)
-        TimelineView(.animation(paused: !live)) { context in
+        let face = Face(size: 26, ink: Ink.primary)
+        TimelineView(.animation(minimumInterval: 1 / OdometerReel.fps, paused: !live)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let v = live ? motion.value(at: t) : motion.target, glow = live ? motion.glow(at: t) : 0
             Canvas { ctx, box in face.draw(&ctx, box, v: v, glow: glow) }
@@ -174,19 +173,26 @@ struct Odometer: View {
 
 extension Odometer {
     /// The pure drawing path: one frame for a given v and glow, no clock, so
-    /// ImageRenderer and harnesses can draw any frame. Geometry is the kit
-    /// engine's, in its units (the '0' ink is 43 px wide, reel pitch 98 px,
+    /// ImageRenderer and harnesses can draw any frame. Geometry is in the
+    /// reel design's units (the '0' ink is 43 px wide, reel pitch 98 px,
     /// cells 2 px tighter than the tabular advance, separators as wide as
     /// their ink plus the digits' side bearing), measured on the real face
     /// with Core Text so any locale's separator gets its own width.
     struct Face: Sendable {
-        static let halo = Ink.coral.mix(with: .white, by: 0.2, in: .device)   // the kit's #E09470, from our coral
+        static let halo = Ink.coral.mix(with: .white, by: 0.2, in: .device)   // #E09470, from our coral
         let size: CGFloat, ink: Color, font: Font, separator: String
         let pitch, advance, cell, ascent, descent, sepWidth, sepOrigin: CGFloat
         /// Ink box + 0.04 em, plus the 0.16 em feather, above and below.
         var height: CGFloat { ascent + descent + 0.4 * size }
 
-        init(size: CGFloat, ink: Color, separator: String = Locale.current.groupingSeparator ?? ",") {
+        /// The 11 glyphs, resolved on the first frame and reused by the rest:
+        /// resolving text is most of a frame's cost, and a Face lives only
+        /// until the next value. Canvas draws on the main thread only.
+        private final class Cache: @unchecked Sendable { var texts: [GraphicsContext.ResolvedText] = [] }
+        private let cache = Cache()
+
+        init(size: CGFloat, ink: Color) {
+            let separator = Locale.current.groupingSeparator ?? ","
             let tabular = NSFont.monospacedDigitSystemFont(ofSize: size, weight: .bold)
             let ns = tabular.fontDescriptor.withDesign(.rounded).flatMap { NSFont(descriptor: $0, size: size) } ?? tabular
             func line(_ s: String) -> CTLine { CTLineCreateWithAttributedString(NSAttributedString(string: s, attributes: [.font: ns])) }
@@ -235,12 +241,13 @@ extension Odometer {
                 if hasSeparator(c) { glyphs.append((10, x + sepOrigin, baseline, Double(col.open))); x += sepWidth * col.open }
             }
 
-            let texts = (0...9).map { ctx.resolve(Text(String($0)).font(font)) } + [ctx.resolve(Text(separator).font(font))]
-            let top = texts[0].firstBaseline(in: CGSize(width: 1000, height: 1000))
+            if cache.texts.isEmpty {
+                cache.texts = (0...9).map { ctx.resolve(Text(String($0)).font(font)) } + [ctx.resolve(Text(separator).font(font))]
+            }
+            let texts = cache.texts, top = texts[0].firstBaseline(in: CGSize(width: 1000, height: 1000))
             // Soft mask: opaque over the ink box + 0.04 em, a 0.16 em smoothstep
             // feather beyond, nothing outside; destinationIn over the whole layer,
             // since it only touches pixels the fill covers.
-            func smooth(_ x: Double) -> Double { x * x * (3 - 2 * x) }
             let feather = 0.16 * size / height
             let ramp = (0...8).map { (alpha: smooth(Double($0) / 8), at: feather * CGFloat($0) / 8) }
             let mask = Gradient(stops: ramp.map { .init(color: .black.opacity($0.alpha), location: $0.at) }
