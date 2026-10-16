@@ -2,7 +2,7 @@ import Foundation
 
 /// Codex CLI and Codex Desktop rollouts: `<CODEX_HOME>/sessions/YYYY/MM/DD`
 /// and `<CODEX_HOME>/archived_sessions`, one `rollout-*.jsonl` per thread
-/// segment. The rule is the audit oracle's (codex_total.py), line for line.
+/// segment.
 ///
 /// Each `token_count` event carries the model call it just finished as
 /// `last_token_usage`; input + output is that call's tokens, except:
@@ -25,7 +25,8 @@ enum CodexTokens: TokenSource {
     }
 
     static let id = "codex"
-    /// Seconds: the oracle's WINDOW (codex_total.py --window default).
+    /// Seconds after the file's first line during which rows are replayed
+    /// history, not new usage.
     static let replayWindow = 1.0
 
     /// NOTCHLIMITS_CODEX_DIR (dev runs, harnesses) replaces both with one root.
@@ -39,16 +40,7 @@ enum CodexTokens: TokenSource {
                 ?? ("~/.codex" as NSString).expandingTildeInPath
             dirs = [home + "/sessions", home + "/archived_sessions"]
         }
-        var seen = Set<String>()
-        return dirs.compactMap { dir in
-            guard let real = realpath(dir, nil) else { return nil }
-            defer { free(real) }
-            let path = String(cString: real)
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-                  isDirectory.boolValue, seen.insert(path).inserted else { return nil }
-            return URL(fileURLWithPath: path, isDirectory: true)
-        }
+        return existing(dirs)
     }
 
     static func isLog(_ url: URL) -> Bool {
@@ -68,12 +60,13 @@ enum CodexTokens: TokenSource {
             state.clock = meta?.timestamp.flatMap(micros)
             state.lastTotal = meta?.payload?.history_base?.thread_id.flatMap(lastTotal(ofSegment:))
         }
-        // No reference clock: the oracle skips the whole file.
+        // No reference clock, no way to tell replays from usage: skip the file.
         guard let clock = state.clock else { return 0 }
         let found = needles(in: line)
         var tokens: Int64 = 0
         if found.row, let row = row(line) {
-            // Seconds as the oracle's floats, so the window edge rounds the same.
+            // In float seconds on purpose: the window was measured on float
+            // timestamps, so a row right at its edge rounds the same way.
             if Double(row.time) / 1e6 - Double(clock) / 1e6 >= replayWindow, row.total != state.lastTotal {
                 tokens += row.tokens
             }
@@ -121,7 +114,7 @@ enum CodexTokens: TokenSource {
         }
     }
 
-    /// Byte prefilter with the oracle's two needles; almost every line stops
+    /// Byte prefilter for the two keys that matter; almost every line stops
     /// here, undecoded. Both needles have "_" at offset 13, about 1 byte in
     /// 1,000 of rollout text, so one memchr pass finds either several times
     /// faster than memmem's bytewise search.
@@ -153,8 +146,8 @@ enum CodexTokens: TokenSource {
         return (total.tuple, last.tokens, time)
     }
 
-    /// "2026-07-13T21:04:20.590Z" to microseconds since 1970, exactly as the
-    /// oracle's strptime("%Y-%m-%dT%H:%M:%S.%fZ"), without a formatter per row.
+    /// "2026-07-13T21:04:20.590Z" to microseconds since 1970, exactly as
+    /// strptime("%Y-%m-%dT%H:%M:%S.%fZ") reads it, without a formatter per row.
     private static func micros(_ text: String) -> Int64? {
         let b = Array(text.utf8)
         guard (22...27).contains(b.count), b[4] == 0x2D, b[7] == 0x2D, b[10] == 0x54, b[13] == 0x3A,
@@ -185,8 +178,8 @@ enum CodexTokens: TokenSource {
     /// the previous segment (`history_base`), and its cumulative counter keeps
     /// running. Resuming re-emits the previous segment's last row into the new
     /// file, so the re-emission check starts from that segment's last total,
-    /// as the oracle's per-thread carry does. The previous segment is finished
-    /// by the time the next exists; this reads it once per segment file.
+    /// carried per thread. The previous segment is finished by the time the
+    /// next exists; this reads it once per segment file.
     private static func lastTotal(ofSegment id: String) -> [Int64]? {
         var id = id
         for _ in 0..<16 { // links followed, a guard against a cycle

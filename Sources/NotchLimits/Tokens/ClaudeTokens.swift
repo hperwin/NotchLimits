@@ -141,36 +141,20 @@ enum ClaudeTokens: TokenSource {
         return names.filter { hidden || !$0.hasPrefix(".") }.sorted().map { dir + "/" + $0 }
     }
 
-    /// `dir/**/.claude/projects` the way a glob expands it: every non-dot
-    /// directory at any depth, symlinks not followed.
+    /// `dir/**/.claude/projects`: every non-dot directory at any depth,
+    /// symlinks not followed, except inside a sandbox, whose own folders
+    /// (uploads, outputs) hold no other. This runs on every slow tick, so it
+    /// reads directory entries directly and never descends into the files
+    /// a sandbox piles up with use.
     private static func sandboxes(in dir: String) -> [String] {
-        let base = URL(fileURLWithPath: dir)
-        var found = [dir + "/.claude/projects"]
-        let walk = FileManager.default.enumerator(
-            at: base, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles
-        )
-        while let url = walk?.nextObject() as? URL {
-            if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
-                found.append(url.path + "/.claude/projects")
-            }
+        guard let stream = opendir(dir) else { return [] }
+        var names: [String] = []
+        while let entry = readdir(stream) {
+            guard entry.pointee.d_type == DT_DIR else { continue }
+            names.append(withUnsafeBytes(of: entry.pointee.d_name) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) })
         }
-        return found.sorted()
-    }
-
-    /// Real paths of the candidates that are directories, first occurrence
-    /// kept, minus any nested inside another root.
-    private static func existing(_ paths: [String]) -> [URL] {
-        var real: [String] = []
-        for path in paths {
-            guard let resolved = realpath(path, nil) else { continue }
-            let dir = String(cString: resolved)
-            free(resolved)
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue, !real.contains(dir) {
-                real.append(dir)
-            }
-        }
-        return real.filter { dir in !real.contains { dir.hasPrefix($0 + "/") } }
-            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        closedir(stream)
+        if names.contains(".claude") { return [dir + "/.claude/projects"] }
+        return names.filter { !$0.hasPrefix(".") }.sorted().flatMap { sandboxes(in: dir + "/" + $0) }
     }
 }
