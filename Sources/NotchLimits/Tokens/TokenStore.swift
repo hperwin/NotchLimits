@@ -49,10 +49,11 @@ final class TokenStore: ObservableObject {
 
     deinit { ingest.stop() }
 
-    /// Loads the ledger, catches every log up off-main (publishing partial
-    /// totals at most 4 times a second, so the hero rolls up while a first
-    /// run counts), then tails live. Saves itself when dirty, at most every
-    /// 10 s.
+    /// Catches every log up off-main (publishing partial totals at most 4
+    /// times a second, so the hero rolls up while a first run counts), then
+    /// tails live. Saves itself when dirty, at most once a minute: a relaunch
+    /// replays the logs exactly from the last save, so a longer gap loses
+    /// nothing and spares the disk a multi-MB rewrite every few seconds.
     func start() { ingest.start() }
 
     /// One full catch-up to EOF with no watching and no autosave, so the
@@ -125,25 +126,26 @@ private final class Book<S: TokenSource> {
 }
 
 /// Everything that touches files or the ledger. All mutable state is
-/// confined to `queue`: the FSEvents stream and every vnode source deliver on
-/// it, and the store only reaches in through `queue.async`/`queue.sync`.
-/// That confinement is what makes `@unchecked Sendable` true here.
+/// confined to `queue`: the FSEvents stream, every vnode source and the slow
+/// tick deliver on it, and the store only reaches in through `queue.async`/
+/// `queue.sync`. That confinement is what makes `@unchecked Sendable` true.
 private final class Ingest: @unchecked Sendable {
     let queue = DispatchQueue(label: "com.hayden.notchlimits.tokens", qos: .utility)
-    /// Set once by TokenStore.init, before any work is queued.
+    /// Set once by TokenStore.init, before anything that publishes is queued.
     var publish: @Sendable (Totals) -> Void = { _ in }
 
     private let ledgerURL: URL
     private let claude = Book<ClaudeTokens>()
     private let codex = Book<CodexTokens>()
     private var lastShown: Int64?
-    private var loaded = false, live = false, caughtUp = false
+    private var live = false, caughtUp = false, unreadable = false
     private let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: 4 << 20, alignment: 16)
 
     private var stream: FSEventStreamRef?
     private var streamRoots: [String] = []
     private var watchers: [String: DispatchSourceFileSystemObject] = [:]
     private var lastHeldScan: UInt64 = 0
+    private var ticker: DispatchSourceTimer?
 
     /// Waiters of the running pass, and of the one queued behind it (a pass
     /// asked for mid-pass must start after the ask to mean "up to now").
@@ -162,7 +164,8 @@ private final class Ingest: @unchecked Sendable {
         | kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemRenamed)
     private static let ms: UInt64 = 1_000_000
 
-    init(ledger: URL) { ledgerURL = ledger }
+    /// The ledger loads first: everything else is queued behind it.
+    init(ledger: URL) { ledgerURL = ledger; queue.async { [self] in load() } }
     deinit { buffer.deallocate() }
 
     // MARK: - Entry points (any thread)
@@ -172,6 +175,11 @@ private final class Ingest: @unchecked Sendable {
             guard !live else { return }
             live = true
             requestPass(nil)
+            let ticker = DispatchSource.makeTimerSource(queue: queue)
+            ticker.schedule(deadline: .now() + 10, repeating: 10, leeway: .seconds(5))
+            ticker.setEventHandler { [weak self] in self?.tick() }
+            ticker.resume()
+            self.ticker = ticker
         }
     }
 
@@ -185,6 +193,7 @@ private final class Ingest: @unchecked Sendable {
 
     func stop() {
         queue.async { [self] in
+            ticker?.cancel()
             stopStream()
             for path in watchers.keys { unwatch(path) }
         }
@@ -193,21 +202,31 @@ private final class Ingest: @unchecked Sendable {
     // MARK: - Ledger (queue only)
 
     private func load() {
-        guard !loaded else { return }
-        loaded = true
-        // Unknown or corrupt: start fresh, the logs on disk recount.
         guard let data = try? Data(contentsOf: ledgerURL),
-              let file = try? JSONDecoder().decode(LedgerFile.self, from: data), file.version == 1 else { return }
+              let file = try? JSONDecoder().decode(LedgerFile.self, from: data), file.version == 1 else {
+            // Missing is a first run. Present but unreadable (corrupt, or a
+            // newer format) also recounts the logs on disk, but the file may
+            // hold the only count of logs since pruned, so `write` sets it
+            // aside instead of replacing it.
+            unreadable = FileManager.default.fileExists(atPath: ledgerURL.path)
+            return
+        }
         claude.files = file.claude
         codex.files = file.codex
         claude.sum = file.claude.values.reduce(0) { $0 + $1.tokens }
         codex.sum = file.codex.values.reduce(0) { $0 + $1.tokens }
-        lastShown = lastShown ?? file.lastShown
+        lastShown = file.lastShown
     }
 
     func write() {
         guard dirty else { return }
         lastSave = Self.now()
+        if unreadable {
+            let aside = ledgerURL.deletingLastPathComponent()
+                .appendingPathComponent("token-ledger.unreadable-\(Int(Date().timeIntervalSince1970)).json")
+            guard rename(ledgerURL.path, aside.path) == 0 || errno == ENOENT else { return }
+            unreadable = false
+        }
         let file = LedgerFile(lastShown: lastShown, claude: claude.files, codex: codex.files)
         guard (try? FileManager.default.createDirectory(
                   at: ledgerURL.deletingLastPathComponent(), withIntermediateDirectories: true)) != nil,
@@ -222,7 +241,7 @@ private final class Ingest: @unchecked Sendable {
         dirty = true
         guard live, !saveArmed else { return }
         saveArmed = true
-        let wait = (lastSave + 10_000 * Self.ms).subtractingReportingOverflow(Self.now())
+        let wait = (lastSave + 60_000 * Self.ms).subtractingReportingOverflow(Self.now())
         queue.asyncAfter(deadline: .now() + .nanoseconds(wait.overflow ? 0 : Int(wait.partialValue))) { [self] in
             saveArmed = false
             write()
@@ -284,9 +303,8 @@ private final class Ingest: @unchecked Sendable {
     }
 
     private func beginPass() {
-        load()
-        claude.roots = Self.resolve(ClaudeTokens.roots())
-        codex.roots = Self.resolve(CodexTokens.roots())
+        claude.roots = ClaudeTokens.roots().map(\.path)
+        codex.roots = CodexTokens.roots().map(\.path)
         // The stream starts before the walk, so a line written to a file
         // after its catch-up but before the walk ends is still heard. Roots
         // are only ever added: a root that vanished stays watched (FSEvents
@@ -458,11 +476,28 @@ private final class Ingest: @unchecked Sendable {
         publishSoon()
     }
 
+    /// The live phase's own slow clock, for the two changes that post no
+    /// FSEvents: a log root created after launch (a first Codex run, a new
+    /// profile or sandbox) and a writer that reopens an existing log and holds
+    /// it (Codex resuming a thread). A tick is the root globs plus one
+    /// process-table scan, about 30 ms of background CPU with a thousand
+    /// processes running, and the leeway lets the system fold it into other
+    /// wakeups.
+    private func tick() {
+        guard running == nil else { return }   // a pass reconciles as it ends
+        if ClaudeTokens.roots().map(\.path) != claude.roots || CodexTokens.roots().map(\.path) != codex.roots {
+            return requestPass(nil)
+        }
+        reconcileWatchers()
+        publishSoon()
+    }
+
     /// FSEvents hears about a write only when the writer closes the file, and
     /// Codex keeps each rollout open for its whole session. So every log some
     /// process holds open for writing also gets a kqueue watcher, which fires
     /// per append and costs nothing while the file is quiet. Run after each
-    /// full catch-up and, at most every 5 s, while FSEvents reports activity.
+    /// full catch-up, on every tick, and at most every 5 s while FSEvents
+    /// reports activity.
     private func reconcileWatchers() {
         lastHeldScan = Self.now()
         let held = Self.openForWriting().filter { claude.owns($0) || codex.owns($0) }
@@ -499,18 +534,9 @@ private final class Ingest: @unchecked Sendable {
 
     private static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
 
-    /// Canonical paths (realpath), so they match what FSEvents and the kernel
-    /// report; roots that do not exist drop out.
-    private static func resolve(_ roots: [URL]) -> [String] {
-        Array(Set(roots.compactMap { url -> String? in
-            guard let real = realpath(url.path, nil) else { return nil }
-            defer { free(real) }
-            return String(cString: real)
-        })).sorted()
-    }
-
     /// Paths of files any process this user can inspect holds open for
-    /// writing. One pass over the process table: about 8 ms here.
+    /// writing. One pass over the process table: 5 to 20 ms with a thousand
+    /// processes running.
     private static func openForWriting() -> Set<String> {
         var pids = [pid_t](repeating: 0, count: Int(proc_listallpids(nil, 0)) + 64)
         let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
